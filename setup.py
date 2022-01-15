@@ -15,6 +15,7 @@ install_requires = [
     'colorama',
     'cryptography>=3.4.8',
     'bcrypt',
+    'PyJWT',
     'pykeepass',
     'prompt_toolkit',
     'protobuf>=3.18.0',
