@@ -16,6 +16,7 @@ install_requires = [
     'cryptography>=3.4.8',
     'bcrypt',
     'PyJWT',
+    'jwcrypto',
     'pykeepass',
     'prompt_toolkit',
     'protobuf>=3.18.0',
