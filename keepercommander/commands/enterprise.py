@@ -47,7 +47,7 @@ from ..proto.enterprise_pb2 import (EnterpriseUserIds, ApproveUserDeviceRequest,
 from ..proto.APIRequest_pb2 import (UserDataKeyRequest, UserDataKeyResponse, SecurityReportRequest,
                                     SecurityReportResponse)
 from .transfer_account import EnterpriseTransferUserCommand, transfer_user_parser
-from . import aram    # audit_report_parser, audit_log_parser, AuditLogCommand, AuditReportCommand
+from . import aram, compliance_report
 from .scim import ScimCommand
 
 
@@ -69,6 +69,7 @@ def register_commands(commands):
     commands['aging-report'] = aram.AgingReportCommand()
     commands['security-audit-report'] = SecurityAuditReportCommand()
     commands['user-report'] = UserReportCommand()
+    commands['compliance-report'] = compliance_report.ComplianceReportCommand()
 
 
 def register_command_info(aliases, command_info):

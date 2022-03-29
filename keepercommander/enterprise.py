@@ -84,6 +84,7 @@ class _EnterpriseLoader(object):
             proto.ROLE_ENFORCEMENTS: _EnterpriseRoleEnforcements(self._enterprise),
             proto.MANAGED_COMPANIES: _EnterpriseManagedCompanyEntity(self._enterprise),
             proto.DEVICES_REQUEST_FOR_ADMIN_APPROVAL: _EnterpriseAdminApprovalRequestEntity(self._enterprise),
+            proto.COMPLIANCE_REPORTS: _EnterpriseComplianceReport(self._enterprise)
         }
 
     @property
@@ -826,4 +827,27 @@ class _EnterpriseSsoServiceEntity(_EnterpriseEntity):
 
     def get_keeper_entity_name(self):  # type: () -> str
         return 'sso_services'
+
+
+class _EnterpriseComplianceReport(_EnterpriseEntity):
+    def to_keeper_entity(self, proto_entity, keeper_entity):  # type: (proto.ComplianceReportMetaData, dict) -> None
+        _set_or_remove(keeper_entity, 'report_uid', self.get_proto_entity_id(proto_entity))
+        _set_or_remove(keeper_entity, 'node_id', proto_entity.nodeId)
+        _set_or_remove(keeper_entity, 'report_name', proto_entity.reportName)
+        _set_or_remove(keeper_entity, 'date_generated', proto_entity.dateGenerated)
+        _set_or_remove(keeper_entity, 'run_by_name', proto_entity.runByName)
+        _set_or_remove(keeper_entity, 'number_of_owners', proto_entity.numberOfOwners)
+        _set_or_remove(keeper_entity, 'number_of_records', proto_entity.numberOfRecords)
+
+    def get_keeper_entity_id(self, entity):  # type: (dict) -> any
+        return entity.get('report_uid')
+
+    def get_proto_entity_id(self, entity):  # type: (proto.ComplianceReportMetaData) -> any
+        return utils.base64_url_encode(entity.reportUid)
+
+    def get_entity_type(self):
+        return proto.ComplianceReportMetaData
+
+    def get_keeper_entity_name(self):  # type: () -> str
+        return 'compliance_reports'
 
