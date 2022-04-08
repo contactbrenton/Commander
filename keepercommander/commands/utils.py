@@ -1451,7 +1451,7 @@ class KSMCommand(Command):
 
     @staticmethod
     def add_client(params, app_name_or_uid, count, unlock_ip, first_access_expire_on, access_expire_in_min,
-                   client_name=None, config_init=None):
+                   client_name=None, config_init=None, silent=False):
 
         if isinstance(unlock_ip, bool):
             is_ip_unlocked = unlock_ip
@@ -1569,11 +1569,13 @@ class KSMCommand(Command):
 
             if type(rs) is dict:
                 raise KeeperApiError(rs['error'], rs['message'])
-        print(f'\nSuccessfully generated Client Device\n'
-              f'====================================\n'
-              f'{otat_str}')
 
-        if config_init and not unlock_ip:
+        if not silent:
+            print(f'\nSuccessfully generated Client Device\n'
+                  f'====================================\n'
+                  f'{otat_str}')
+
+        if config_init and not unlock_ip and not silent:
             print(bcolors.WARNING + "\tWarning: Configuration is now locked to your current IP. To keep in unlock you "
                                     "can add flag `--unlock-ip` or use the One-time token to generate configuration on "
                                     "the host that has the IP that needs to be locked." + bcolors.ENDC)
@@ -1616,22 +1618,33 @@ class KSMCommand(Command):
         if 'KEY_OWNER_PUBLIC_KEY' in ConfigKeys.__members__ and ksm_conf_storage.config.get(ConfigKeys.KEY_OWNER_PUBLIC_KEY):
             config_dict[ConfigKeys.KEY_OWNER_PUBLIC_KEY.value] = ksm_conf_storage.config.get(ConfigKeys.KEY_OWNER_PUBLIC_KEY)
 
-        config_str = json.dumps(config_dict)
+        converted_config = KSMCommand.convert_config_dict(config_dict, config_init)
 
-        if config_init in ['b64', 'k8s']:
-            config_str = json_to_base64(config_str)
-        if config_init == 'k8s':
-            config_str = "\n" \
-                         + "apiVersion: v1\n" \
-                         + "data:\n" \
-                         + "  config: " + config_str + "\n" \
-                         + "kind: Secret\n" \
-                         + "metadata:\n" \
-                         + "  name: ksm-config\n" \
-                         + "  namespace: default\n" \
-                         + "type: Opaque"
+        return converted_config
 
-        return config_str
+    @staticmethod
+    def convert_config_dict(config_dict, conversion_type='json'):
+
+        config = json.dumps(config_dict)
+
+        if conversion_type in ['b64', 'k8s']:
+            config = json_to_base64(config)
+
+        if conversion_type == 'k8s':
+            config = "\n" \
+                     + "apiVersion: v1\n" \
+                     + "data:\n" \
+                     + "  config: " + config + "\n" \
+                     + "kind: Secret\n" \
+                     + "metadata:\n" \
+                     + "  name: ksm-config\n" \
+                     + "  namespace: default\n" \
+                     + "type: Opaque"
+
+        if conversion_type == 'dict':
+            config = config_dict
+
+        return config
 
 
 class LogoutCommand(Command):
