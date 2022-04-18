@@ -11,6 +11,8 @@
 import argparse
 import logging
 
+from keeper_secrets_manager_core.configkeys import ConfigKeys
+
 from keepercommander import utils, api
 from keepercommander.commands.base import raise_parse_exception, suppress_exit
 from keepercommander.commands.enterprise_common import EnterpriseCommand
@@ -23,12 +25,20 @@ from keepercommander.display import bcolors
 dr_create_controller_parser = argparse.ArgumentParser(prog='dr-create-controller')
 dr_create_controller_parser.add_argument('--name', '-n', required=True, dest='controller_name',  help='Name of the Controller', action='store')
 dr_create_controller_parser.add_argument('--application', '-a', required=True, dest='ksm_app', help='KSM Application name or UID', action='store')
+dr_create_controller_parser.add_argument('--return_value', '-r', dest='return_value', action='store_true', help='Return value from the command for automation purposes')
+dr_create_controller_parser.add_argument('--config-init', '-c', type=str, dest='config_init', action='store', help='Initialize client config')    # json, b64, file
+
 dr_create_controller_parser.error = raise_parse_exception
 dr_create_controller_parser.exit = suppress_exit
 
 dr_list_controllers_parser = argparse.ArgumentParser(prog='dr-list-controller')
 dr_list_controllers_parser.error = raise_parse_exception
 dr_list_controllers_parser.exit = suppress_exit
+
+
+dr_client_connect_parser = argparse.ArgumentParser(prog='client-connect')
+dr_client_connect_parser.error = raise_parse_exception
+dr_client_connect_parser.exit = suppress_exit
 
 
 def register_commands(commands):
@@ -56,6 +66,8 @@ class DRCreateControllerCommand(EnterpriseCommand):
 
         controller_name = kwargs.get('controller_name')
         ksm_app = kwargs.get('ksm_app')
+        is_return_value = kwargs.get('return_value')
+        config_init = kwargs.get('config_init')
 
         new_client_name = controller_name + '-ctr'
 
@@ -72,12 +84,20 @@ class DRCreateControllerCommand(EnterpriseCommand):
                                                 config_init=False,
                                                 silent=True)
 
+        one_time_token = one_time_tokens[0]
 
-        # Convert/Initialize token to full config
+        # get a hash of the one time token which is the same as Client ID in the config
+        one_time_token_hash = KSMCommand.get_hash_of_one_time_token(one_time_token)
 
-        config_dict = KSMCommand.init_ksm_config(params, one_time_token=one_time_tokens[0], config_init='dict')
+        if config_init:
+            config_str_and_config_dict = KSMCommand.init_ksm_config(params, one_time_token, config_init,
+                                                                    include_config_dict=True)
 
-        client_id = config_dict.get('clientId')
+            one_time_token = config_str_and_config_dict.get('config_str')
+            client_id = config_str_and_config_dict.get('config_dict').get(ConfigKeys.KEY_CLIENT_ID.value)
+        else:
+            client_id = one_time_token_hash
+
         rq = {
             'command': 'put_enterprise_setting',
             'type': 'RDControllerConfig',
@@ -90,17 +110,21 @@ class DRCreateControllerCommand(EnterpriseCommand):
 
         rs = api.communicate(params, rq)
 
-        logging.debug(str(rs))
-        print(f'Controller [{bcolors.OKBLUE}{controller_name}{bcolors.ENDC}] '
-              f'has be created and associated with client [{bcolors.OKBLUE}{new_client_name}{bcolors.ENDC}] '
-              f'in application [{bcolors.OKBLUE}{ksm_app}{bcolors.ENDC}]')
+        if is_return_value:
+            return one_time_token
+        else:
+            print(f'Controller [{bcolors.OKBLUE}{controller_name}{bcolors.ENDC}] '
+                  f'has be created and associated with client [{bcolors.OKBLUE}{new_client_name}{bcolors.ENDC}] '
+                  f'in application [{bcolors.OKBLUE}{ksm_app}{bcolors.ENDC}]')
 
-        config_json = KSMCommand.convert_config_dict(config_dict, conversion_type='json')
+            if config_init:
+                print('Use following initialized config be used in the controller:')
+            else:
+                print('Use following one time token to setup the controller:')
 
-        print('--------------------------------')
-        print('Use following config in the client and controller:')
-
-        print(bcolors.OKGREEN + config_json + bcolors.ENDC)
+            print('--------------------------------')
+            print(bcolors.OKGREEN + one_time_token + bcolors.ENDC)
+            print('--------------------------------')
 
 
 class DRListControllersCommand(EnterpriseCommand):

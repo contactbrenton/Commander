@@ -26,6 +26,7 @@ from distutils.util import strtobool
 from time import time
 
 from google.protobuf.json_format import MessageToDict
+from keeper_secrets_manager_core.utils import url_safe_str_to_bytes, bytes_to_base64
 
 import keepercommander
 from . import aliases, commands, enterprise_commands
@@ -1585,7 +1586,7 @@ class KSMCommand(Command):
         return tokens
 
     @staticmethod
-    def init_ksm_config(params, one_time_token, config_init):
+    def init_ksm_config(params, one_time_token, config_init, include_config_dict=False):
 
         try:
             from keeper_secrets_manager_core import SecretsManager
@@ -1620,7 +1621,13 @@ class KSMCommand(Command):
 
         converted_config = KSMCommand.convert_config_dict(config_dict, config_init)
 
-        return converted_config
+        if include_config_dict:
+            return {
+                'config_str': converted_config,
+                'config_dict': config_dict
+            }
+        else:
+            return converted_config
 
     @staticmethod
     def convert_config_dict(config_dict, conversion_type='json'):
@@ -1645,6 +1652,24 @@ class KSMCommand(Command):
             config = config_dict
 
         return config
+
+    @staticmethod
+    def get_hash_of_one_time_token(one_time_token):
+        """ KSM: Get client ID from one time token, which is equal to a Hash of one time token"""
+
+        ott_parts = one_time_token.split(":")
+
+        if len(ott_parts) == 2:
+            ott = ott_parts[1]
+        else:
+            ott = ott_parts[0]
+
+        existing_secret_key_bytes = url_safe_str_to_bytes(ott)
+        digest = 'sha512'
+        one_time_token_hash = bytes_to_base64(hmac.new(existing_secret_key_bytes,
+                                                            b'KEEPER_SECRETS_MANAGER_CLIENT_ID',
+                                                            digest).digest())
+        return one_time_token_hash
 
 
 class LogoutCommand(Command):
