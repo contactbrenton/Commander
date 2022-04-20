@@ -9,7 +9,11 @@
 # Contact: sm@keepersecurity.com
 #
 import argparse
+import json
 import logging
+import os
+from datetime import datetime
+from threading import Thread
 
 from keeper_secrets_manager_core.configkeys import ConfigKeys
 
@@ -20,6 +24,13 @@ from keepercommander.commands.utils import KSMCommand
 from .base import GroupCommand, dump_report_data
 
 from keepercommander.display import bcolors
+
+WS_INIT = {'kind': 'init'}
+WS_LOG_FOLDER = 'dr-logs'
+WS_URL = 'wss://47ynnck3xd.execute-api.us-east-1.amazonaws.com/dev/'
+WS_HEADERS = {
+    'ClientVersion': 'ms16.2.4'
+}
 
 
 dr_create_controller_parser = argparse.ArgumentParser(prog='dr-create-controller')
@@ -36,9 +47,21 @@ dr_list_controllers_parser.error = raise_parse_exception
 dr_list_controllers_parser.exit = suppress_exit
 
 
-dr_client_connect_parser = argparse.ArgumentParser(prog='client-connect')
-dr_client_connect_parser.error = raise_parse_exception
-dr_client_connect_parser.exit = suppress_exit
+dr_connect_parser = argparse.ArgumentParser(prog='dr-connect')
+dr_connect_parser.error = raise_parse_exception
+dr_connect_parser.exit = suppress_exit
+
+dr_disconnect_parser = argparse.ArgumentParser(prog='dr-disconnect')
+dr_disconnect_parser.error = raise_parse_exception
+dr_disconnect_parser.exit = suppress_exit
+
+dr_cmd_parser = argparse.ArgumentParser(prog='dr-cmd')
+dr_cmd_parser.add_argument(
+    'command', nargs='*', type=str, action='store', help='Controller command'
+)
+dr_cmd_parser.error = raise_parse_exception
+dr_cmd_parser.exit = suppress_exit
+
 
 
 def register_commands(commands):
@@ -55,6 +78,9 @@ class DRControllerCommand(GroupCommand):
         super(DRControllerCommand, self).__init__()
         self.register_command('controller-create', DRCreateControllerCommand(), 'Create discovery and rotation controller')
         self.register_command('controller-list', DRListControllersCommand(), 'View controllers')
+        self.register_command('connect', DRConnect(), 'Connect')
+        self.register_command('disconnect', DRDisconnect(), 'Disconnect')
+        self.register_command('cmd', DRCommand(), 'Send command')
 
 
 class DRCreateControllerCommand(EnterpriseCommand):
@@ -158,3 +184,118 @@ class DRListControllersCommand(EnterpriseCommand):
 
         dump_report_data(table, headers, fmt='table', filename="",
                          row_number=True, column_width=None)
+
+
+class DRConnection:
+    def __init__(self):
+        if not os.path.isdir(WS_LOG_FOLDER):
+            os.makedirs(WS_LOG_FOLDER)
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        self.ws_log_file = os.path.join(WS_LOG_FOLDER, f'{timestamp}.log')
+        self.ws_app = None
+        self.thread = None
+
+    def connect(self, session_token):
+        try:
+            import websocket
+        except ImportError:
+            logging.warning(f'websocket-client module is missing. '
+                            f'Use following command to install it '
+                            f'`{bcolors.OKGREEN}pip3 install -U websocket-client{bcolors.ENDC}`')
+            return
+
+        headers = WS_HEADERS
+        headers['Auth'] = f'User {session_token}'
+        self.ws_app = websocket.WebSocketApp(
+            WS_URL, header=headers, on_open=self.on_open, on_message=self.on_message, on_error=self.on_error,
+            on_close=self.on_close
+        )
+        self.thread = Thread(target=self.ws_app.run_forever)
+        self.thread.start()
+
+    def disconnect(self):
+        if self.thread and self.thread.is_alive():
+            self.ws_app.close()
+            self.thread.join()
+
+    def init(self):
+        self.ws_app.send(json.dumps(WS_INIT))
+        self.log('Connection initialized')
+
+    def log(self, msg, time=True):
+        with open(self.ws_log_file, 'a') as ws_log:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f ') if time else ''
+            ws_log.write(f'{timestamp}{msg}\n')
+
+    def send(self, command):
+        message = {'kind': 'command', 'data': command}
+        self.ws_app.send(json.dumps(message))
+        self.log(f'Sent {command}')
+
+    def process_event(self, event):
+        if event['kind'] == 'ctl_state':
+            new_controllers = event['controllers']
+            # dropped = self.controllers - new_controllers
+            self.log(f'New controllers: {new_controllers}')
+        elif event['kind'] == 'ctl_cmd':
+            command = event['command']
+            self.log(f'Command: {command}')
+        else:
+            self.log(f'Event: {event}')
+
+    def on_open(self, ws):
+        self.log('Connection open')
+        self.init()
+
+    def on_message(self, ws, event_json):
+        self.log(f'ws.listener.on_message:{event_json}')
+
+        try:
+            event = json.loads(event_json)
+        except json.decoder.JSONDecodeError:
+            self.log(f'Raw event: {event_json}')
+        else:
+            self.process_event(event)
+
+    def on_error(self, ws, error_event):
+        self.log(f'ws.listener.on_error:{error_event}')
+
+    def on_close(self, ws, close_status_code, close_msg):
+        self.log(f'ws.listener.on_close: close_status_code=[{close_status_code}], close_msg=[{close_msg}]')
+
+
+class DRConnect(EnterpriseCommand):
+    def get_parser(self):
+        return dr_connect_parser
+
+    def execute(self, params, **kwargs):
+        if getattr(params, 'ws', None) is None:
+            params.ws = DRConnection()
+            params.ws.connect(params.session_token)
+            logging.info(f'Connected {params.config["device_token"]}')
+        else:
+            logging.warning('Connection exists')
+
+
+class DRDisconnect(EnterpriseCommand):
+    def get_parser(self):
+        return dr_disconnect_parser
+
+    def execute(self, params, **kwargs):
+        if getattr(params, 'ws', None) is None:
+            logging.warning("Connection doesn't exist")
+        else:
+            params.ws.disconnect()
+            params.ws = None
+
+
+class DRCommand(EnterpriseCommand):
+    def get_parser(self):
+        return dr_cmd_parser
+
+    def execute(self, params, **kwargs):
+        if getattr(params, 'ws', None) is None:
+            logging.warning("Connection doesn't exist")
+        else:
+            command = kwargs.get('command', [])
+            params.ws.send(json.dumps(command))
