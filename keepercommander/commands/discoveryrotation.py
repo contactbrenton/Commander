@@ -32,6 +32,8 @@ WS_HEADERS = {
     'ClientVersion': 'ms16.2.4'
 }
 
+WS_SERVER_PING_INTERVAL_SEC = 5
+
 
 dr_create_controller_parser = argparse.ArgumentParser(prog='dr-create-controller')
 dr_create_controller_parser.add_argument('--name', '-n', required=True, dest='controller_name',  help='Name of the Controller', action='store')
@@ -56,12 +58,10 @@ dr_disconnect_parser.error = raise_parse_exception
 dr_disconnect_parser.exit = suppress_exit
 
 dr_cmd_parser = argparse.ArgumentParser(prog='dr-cmd')
-dr_cmd_parser.add_argument(
-    'command', nargs='*', type=str, action='store', help='Controller command'
-)
+dr_cmd_parser.add_argument('--dest', '-d', nargs='*', type=str, action='store', dest='destinations', help='Destination, usually Controller Client ID')
+dr_cmd_parser.add_argument('command', nargs='*', type=str, action='store', help='Controller command')
 dr_cmd_parser.error = raise_parse_exception
 dr_cmd_parser.exit = suppress_exit
-
 
 
 def register_commands(commands):
@@ -83,6 +83,7 @@ class DRControllerCommand(GroupCommand):
         self.register_command('cmd', DRCommand(), 'Send command')
 
 
+
 class DRCreateControllerCommand(EnterpriseCommand):
 
     def get_parser(self):
@@ -100,41 +101,7 @@ class DRCreateControllerCommand(EnterpriseCommand):
         logging.debug(f'controller_name=[{controller_name}]')
         logging.debug(f'ksm_app        =[{ksm_app}]')
 
-        one_time_tokens = KSMCommand.add_client(params,
-                                                app_name_or_uid=ksm_app,
-                                                count=1,
-                                                unlock_ip=True,
-                                                first_access_expire_on=5,     # if one time token not used in 5 min then it will be expired
-                                                access_expire_in_min=None,    # how long the client has access to the application, None=Never, int = num of min
-                                                client_name=new_client_name,
-                                                config_init=False,
-                                                silent=True)
-
-        one_time_token = one_time_tokens[0]
-
-        # get a hash of the one time token which is the same as Client ID in the config
-        one_time_token_hash = KSMCommand.get_hash_of_one_time_token(one_time_token)
-
-        if config_init:
-            config_str_and_config_dict = KSMCommand.init_ksm_config(params, one_time_token, config_init,
-                                                                    include_config_dict=True)
-
-            one_time_token = config_str_and_config_dict.get('config_str')
-            client_id = config_str_and_config_dict.get('config_dict').get(ConfigKeys.KEY_CLIENT_ID.value)
-        else:
-            client_id = one_time_token_hash
-
-        rq = {
-            'command': 'put_enterprise_setting',
-            'type': 'RDControllerConfig',
-            'settings': {
-                'name': controller_name,
-                'controllerUid': utils.generate_uid(),
-                'clientId': client_id
-            }
-        }
-
-        rs = api.communicate(params, rq)
+        one_time_token = DRControllerManager.create_controller(params, controller_name, ksm_app, config_init)
 
         if is_return_value:
             return one_time_token
@@ -160,14 +127,7 @@ class DRListControllersCommand(EnterpriseCommand):
 
     def execute(self, params, **kwargs):
 
-        rq = {
-            'command': 'get_enterprise_setting',
-            'include': ["RDControllerConfig"]
-        }
-
-        rs = api.communicate(params, rq)
-
-        controllers = rs.get('RDControllerConfig')
+        controllers = DRControllerManager.get_controllers(params)
 
         table = []
         headers = ['Uid', 'Name', 'Created', 'Modified', 'Client ID']
@@ -191,6 +151,8 @@ class DRConnection:
         if not os.path.isdir(WS_LOG_FOLDER):
             os.makedirs(WS_LOG_FOLDER)
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
+        # one log file per opened connection
         self.ws_log_file = os.path.join(WS_LOG_FOLDER, f'{timestamp}.log')
         self.ws_app = None
         self.thread = None
@@ -207,10 +169,18 @@ class DRConnection:
         headers = WS_HEADERS
         headers['Auth'] = f'User {session_token}'
         self.ws_app = websocket.WebSocketApp(
-            WS_URL, header=headers, on_open=self.on_open, on_message=self.on_message, on_error=self.on_error,
+            WS_URL,
+            header=headers,
+            on_open=self.on_open,
+            on_message=self.on_message,
+            on_error=self.on_error,
             on_close=self.on_close
         )
-        self.thread = Thread(target=self.ws_app.run_forever)
+        self.thread = Thread(target=self.ws_app.run_forever, kwargs={
+            'ping_interval': WS_SERVER_PING_INTERVAL_SEC,   # frequency how ofter ping is send to the server to keep the connection alive
+            'ping_payload': 'client-hello'
+            },
+            daemon=True)
         self.thread.start()
 
     def disconnect(self):
@@ -227,10 +197,20 @@ class DRConnection:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f ') if time else ''
             ws_log.write(f'{timestamp}{msg}\n')
 
-    def send(self, command):
-        message = {'kind': 'command', 'data': command}
-        self.ws_app.send(json.dumps(message))
-        self.log(f'Sent {command}')
+    def send(self, command, destination_client_ids=None):
+        data_dict = {}
+
+        data_dict['kind'] = 'command'
+        data_dict['data'] = command
+
+        if destination_client_ids:
+            # Send only to specified clients, else will send to all clients
+            data_dict['clientIds'] = destination_client_ids
+
+        data_json = json.dumps(data_dict)
+
+        self.ws_app.send(data_json)
+        self.log(f'Data sent {data_json}')
 
     def process_event(self, event):
         if event['kind'] == 'ctl_state':
@@ -295,7 +275,74 @@ class DRCommand(EnterpriseCommand):
 
     def execute(self, params, **kwargs):
         if getattr(params, 'ws', None) is None:
-            logging.warning("Connection doesn't exist")
+            logging.warning(f'Connection doesn\'t exist. Please connect to the router before executing '
+                            f'commands using following command {bcolors.OKGREEN}dr connect{bcolors.ENDC}')
         else:
-            command = kwargs.get('command', [])
-            params.ws.send(json.dumps(command))
+
+            destinations = kwargs.get('destinations', [])
+
+            command_arr = kwargs.get('command', [])
+            command_json = json.dumps(command_arr)
+            params.ws.send(command_json, destinations)
+
+
+class DRControllerManager:
+
+    @staticmethod
+    def get_controllers(params):
+        rq = {
+            'command': 'get_enterprise_setting',
+            'include': ["RDControllerConfig"]
+        }
+
+        rs = api.communicate(params, rq)
+
+        controllers = rs.get('RDControllerConfig')
+
+        return controllers
+
+    @staticmethod
+    def create_controller(params, controller_name, ksm_app, config_init):
+
+        new_client_name = controller_name + '-ctr'
+
+        one_time_tokens = KSMCommand.add_client(params,
+                                                app_name_or_uid=ksm_app,
+                                                count=1,
+                                                unlock_ip=True,
+                                                first_access_expire_on=5,
+                                                # if one time token not used in 5 min then it will be expired
+                                                access_expire_in_min=None,
+                                                # how long the client has access to the application, None=Never, int = num of min
+                                                client_name=new_client_name,
+                                                config_init=False,
+                                                silent=True)
+
+        one_time_token = one_time_tokens[0]
+
+        # get a hash of the one time token which is the same as Client ID in the config
+        one_time_token_hash = KSMCommand.get_hash_of_one_time_token(one_time_token)
+
+        if config_init:
+            config_str_and_config_dict = KSMCommand.init_ksm_config(params, one_time_token, config_init,
+                                                                    include_config_dict=True)
+
+            one_time_token = config_str_and_config_dict.get('config_str')
+            client_id = config_str_and_config_dict.get('config_dict').get(ConfigKeys.KEY_CLIENT_ID.value)
+        else:
+            client_id = one_time_token_hash
+
+        rq = {
+            'command': 'put_enterprise_setting',
+            'type': 'RDControllerConfig',
+            'settings': {
+                'name': controller_name,
+                'controllerUid': utils.generate_uid(),
+                'clientId': client_id
+            }
+        }
+
+        rs = api.communicate(params, rq)
+
+        return one_time_token
+
