@@ -197,11 +197,11 @@ class DRConnection:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f ') if time else ''
             ws_log.write(f'{timestamp}{msg}\n')
 
-    def send(self, command, destination_client_ids=None):
+    def send(self, command_payload, destination_client_ids=None):
         data_dict = {}
 
         data_dict['kind'] = 'command'
-        data_dict['data'] = command
+        data_dict['payload'] = command_payload
 
         if destination_client_ids:
             # Send only to specified clients, else will send to all clients
@@ -213,13 +213,20 @@ class DRConnection:
         self.log(f'Data sent {data_json}')
 
     def process_event(self, event):
+        self.log(f'New Event to process [{event}]')
+
         if event['kind'] == 'ctl_state':
             new_controllers = event['controllers']
             # dropped = self.controllers - new_controllers
-            self.log(f'New controllers: {new_controllers}')
-        elif event['kind'] == 'ctl_cmd':
-            command = event['command']
-            self.log(f'Command: {command}')
+            self.log(f'Controller state: {new_controllers}')
+        elif event['kind'] == 'ctl_response':
+            payload = event['payload']
+
+            is_success = payload['success']
+            status_message = payload['statusMessage']
+            data = payload['data']
+
+            self.log(f'is_success: [{is_success}], status_message: [{status_message}], data: [{data}]')
         else:
             self.log(f'Event: {event}')
 
@@ -282,8 +289,15 @@ class DRCommand(EnterpriseCommand):
             destinations = kwargs.get('destinations', [])
 
             command_arr = kwargs.get('command', [])
-            command_json = json.dumps(command_arr)
-            params.ws.send(command_json, destinations)
+            # command_json = json.dumps(command_arr)
+
+            command_payload = {
+                'action': command_arr[0],
+                'args': command_arr[1:] if len(command_arr) > 1 else []
+                # kwargs?: {[key: string]: string | number | boolean}
+            }
+
+            params.ws.send(command_payload, destinations)
 
 
 class DRControllerManager:
