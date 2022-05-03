@@ -18,7 +18,7 @@ from threading import Thread
 from keeper_secrets_manager_core.configkeys import ConfigKeys
 
 from keepercommander import utils, api
-from keepercommander.commands.base import raise_parse_exception, suppress_exit
+from keepercommander.commands.base import raise_parse_exception, suppress_exit, Command
 from keepercommander.commands.enterprise_common import EnterpriseCommand
 from keepercommander.commands.utils import KSMCommand
 from .base import GroupCommand, dump_report_data
@@ -45,6 +45,7 @@ dr_create_controller_parser.error = raise_parse_exception
 dr_create_controller_parser.exit = suppress_exit
 
 dr_list_controllers_parser = argparse.ArgumentParser(prog='dr-list-controller')
+dr_list_controllers_parser.add_argument('--connected', '-c', dest='connected_only', action='store_true', help='Return only active Controllers that are connected')
 dr_list_controllers_parser.error = raise_parse_exception
 dr_list_controllers_parser.exit = suppress_exit
 
@@ -80,8 +81,86 @@ class DRControllerCommand(GroupCommand):
         self.register_command('controller-list', DRListControllersCommand(), 'View controllers')
         self.register_command('connect', DRConnect(), 'Connect')
         self.register_command('disconnect', DRDisconnect(), 'Disconnect')
-        self.register_command('cmd', DRCommand(), 'Send command')
+        self.register_command('cmd', DRCmdCommand(), 'Send command')
 
+
+class DRCmdCommand(GroupCommand):
+
+    def __init__(self):
+
+        super(DRCmdCommand, self).__init__()
+        self.register_command('discover', DRCmdDiscoverCommand(), 'Discover command')
+        self.register_command('rotate', DRCmdRotateCommand(), 'Rotate command')
+
+
+class DRCmdRotateCommand(Command):
+    dr_cmd_rotate_command_parser = argparse.ArgumentParser(prog='dr-rotate-command')
+    dr_cmd_rotate_command_parser.add_argument('--record-uid', '-r', required=True, dest='record_uid', action='store',
+                                              help='Record UID to rotate')
+    dr_cmd_rotate_command_parser.add_argument('--destinations', '-d', required=False, dest='destinations', action='store',
+                                              help='Controller id')
+    dr_cmd_rotate_command_parser.error = raise_parse_exception
+    dr_cmd_rotate_command_parser.exit = suppress_exit
+
+    def get_parser(self):
+        return self.dr_cmd_rotate_command_parser
+
+    def execute(self, params, **kwargs):
+
+        if getattr(params, 'ws', None) is None:
+            logging.warning(f'Connection doesn\'t exist. Please connect to the router before executing '
+                            f'commands using following command {bcolors.OKGREEN}dr connect{bcolors.ENDC}')
+
+            return
+
+        destinations = kwargs.get('destinations', [])
+
+        action = kwargs.get('action', [])
+
+        command_payload = {
+            'action': action,
+            # 'args': command_arr[1:] if len(command_arr) > 1 else []
+            'kwargs': kwargs
+        }
+
+        params.ws.send(command_payload, destinations)
+
+
+class DRCmdDiscoverCommand(Command):
+
+    dr_cmd_discover_command_parser = argparse.ArgumentParser(prog='dr-discover-command')
+    dr_cmd_discover_command_parser.add_argument('--shared-folder', '-f', required=True, dest='shared_folder_uid',
+                                                action='store',
+                                                help='UID of the Shared Folder where results will be stored')
+    dr_cmd_discover_command_parser.add_argument('--provider-record', '-p', required=True, dest='provider_record_uid',
+                                                action='store', help='Provider Record UID that defines network')
+    dr_cmd_discover_command_parser.add_argument('--destinations', '-d', required=False, dest='destinations', action='store',
+                                              help='Controller id')
+
+    dr_cmd_discover_command_parser.error = raise_parse_exception
+    dr_cmd_discover_command_parser.exit = suppress_exit
+
+    def get_parser(self):
+        return self.dr_cmd_discover_command_parser
+
+    def execute(self, params, **kwargs):
+
+        if getattr(params, 'ws', None) is None:
+            logging.warning(f'Connection doesn\'t exist. Please connect to the router before executing '
+                            f'commands using following command {bcolors.OKGREEN}dr connect{bcolors.ENDC}')
+            return
+
+        destinations = kwargs.get('destinations', [])
+
+        action = kwargs.get('action', [])
+
+        command_payload = {
+            'action': action,
+            # 'args': command_arr[1:] if len(command_arr) > 1 else []
+            'kwargs': kwargs
+        }
+
+        params.ws.send(command_payload, destinations)
 
 
 class DRCreateControllerCommand(EnterpriseCommand):
@@ -126,6 +205,7 @@ class DRListControllersCommand(EnterpriseCommand):
         return dr_list_controllers_parser
 
     def execute(self, params, **kwargs):
+        connected_only = kwargs.get('connected_only')
 
         controllers = DRControllerManager.get_controllers(params)
 
@@ -275,29 +355,6 @@ class DRDisconnect(EnterpriseCommand):
             params.ws.disconnect()
             params.ws = None
 
-
-class DRCommand(EnterpriseCommand):
-    def get_parser(self):
-        return dr_cmd_parser
-
-    def execute(self, params, **kwargs):
-        if getattr(params, 'ws', None) is None:
-            logging.warning(f'Connection doesn\'t exist. Please connect to the router before executing '
-                            f'commands using following command {bcolors.OKGREEN}dr connect{bcolors.ENDC}')
-        else:
-
-            destinations = kwargs.get('destinations', [])
-
-            command_arr = kwargs.get('command', [])
-            # command_json = json.dumps(command_arr)
-
-            command_payload = {
-                'action': command_arr[0],
-                'args': command_arr[1:] if len(command_arr) > 1 else []
-                # kwargs?: {[key: string]: string | number | boolean}
-            }
-
-            params.ws.send(command_payload, destinations)
 
 
 class DRControllerManager:

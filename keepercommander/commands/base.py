@@ -333,17 +333,18 @@ class Command(CliCommand):
 
 class GroupCommand(CliCommand):
     def __init__(self):
-        self._commands = collections.OrderedDict()     # type: dict[str, Command]
+        self._commands = collections.OrderedDict()     # type: dict[str, CliCommand]
         self._command_info = {}    # type: dict[str, str]
         self.default_verb = ''
 
-    def register_command(self, verb, command, description=None):   # type: (any, Command, str) -> None
+    def register_command(self, verb, command, description=None):   # type: (any, CliCommand, str) -> None
         verb = verb.lower()
         self._commands[verb] = command
         if not description:
-            parser = command.get_parser()
-            if parser:
-                description = parser.description
+            if isinstance(command, Command):
+                parser = command.get_parser()
+                if parser:
+                    description = parser.description
         if description:
             self._command_info[verb] = description
 
